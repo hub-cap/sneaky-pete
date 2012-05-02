@@ -1,0 +1,648 @@
+###############################################################################
+#  -----------------------
+#  Sneaky Pete Guest Agent
+#  -----------------------
+#
+#  To build, install bjam and execute "bjam -d+2". "-d+2" is optional and will
+#  show you each command executed by Boost Build.
+#  To build in debug mode, use:
+#      bjam -d+2
+#  To build staticly, use:
+#      bjam -d+2 release link=static nova-guest
+#
+#  There are extra settings which can be defined by environment variables. They
+#  are as follows:
+#    AGENT_DIR - Give this the absolute file path to the directory containing
+#      this file (Jamroot.jam). Its needed for the Process tests.
+#    TEST_ARGS - Assign this flag values. For example, if you set this to
+#      --flagfile=blah.conf, then blah.conf will have its flag values loaded.
+#      This is needed only for the integration tests.
+#    DESTROY_MYSQL_ON_THIS_MACHINE - Set this to the string "PLEASE" to run
+#      the MySQL preparation integration tests, which will uninstall and
+#      destroy any installation of MySQL on this machine (all data will be
+#      deleted).
+#
+#  Note on the Valgrind error:
+#    ...
+#    Syscall param timer_create(evp) points to uninitialised byte(s) "
+#    ==5279==    at 0x4E2D0DD: timer_create@@GLIBC_2.3.3 (timer_create.c:99)
+#    ...
+#  This is a known issuewith the timer_create call. It is harmless and there
+#  does not appear to be a way to disable the error.
+#
+###############################################################################
+
+
+# Using environment variables isn't the best form, but its a start.
+import os ;
+using testing ;
+
+
+###############################################################################
+#       Project Settings
+###############################################################################
+
+project
+	:	requirements
+		<include>include
+		<include>/usr/include
+		<include>$(BOOST_ROOT)
+		<variant>debug:<define>_DEBUG
+        # The line below makes the Process class print all output.
+        <define>_NOVA_PROCESS_VERBOSE
+        ;
+
+
+###############################################################################
+#       Dependencies
+###############################################################################
+
+
+# System libraries are found automatically by our toolset (GCC).
+# So for example, if you pass "-lrabbitmq" to gcc, here its "<name>rabbitmq."
+
+# Some libraries can't be staticly linked for various reasons.
+# So we create aliases of them which we refer to them by, which force them to
+# be dynamically linked.
+
+lib lib_boost_thread : : <name>boost_thread ;
+lib lib_boost_unit_test_framework : : <name>boost_unit_test_framework ;
+lib lib_confuse : : <name>confuse ;
+lib lib_json : : <name>json ;
+lib lib_mysqlclient : : <name>mysqlclient ;
+
+lib lib_rabbitmq : : <name>rabbitmq ;
+
+lib lib_rt : : <name>rt ;
+lib lib_uuid : : <name>uuid ;
+
+alias dependencies
+	:   lib_json lib_rabbitmq  lib_uuid lib_confuse lib_boost_thread
+ 	;
+
+lib lib_pthread : : <name>pthread ; # Seems to only be needed in static builds
+                                    # static builds also require lib_c.
+
+lib lib_m : : <name>m ;
+lib lib_stdc++ : : <name>stdc++ ;
+
+lib lib_z : : <file>/usr/lib/libz.so.1 ;
+lib lib_c : : <name>c ;
+
+lib lib_mysqlclient_r : : <file>/usr/lib/libmysqlclient.so.16.0.0 ;
+
+alias static_dependencies
+	:   dependencies
+	;
+
+alias test_dependencies
+	:	lib_boost_unit_test_framework lib_boost_thread
+	;
+
+
+###############################################################################
+#       Version Header Generator
+###############################################################################
+import type : register ;
+register VERSION_FILE : th ;
+actions make_version_file_action {
+    GIT_REVISION=`git --git-dir=../.git rev-parse HEAD`
+    QUOTES='"'
+    VERSION_NUMBER=$QUOTES$GIT_REVISION$QUOTES
+    printf "
+    #ifndef __NOVA_GUEST_VERSION_H
+    #define __NOVA_GUEST_VERSION_H
+
+    #define NOVA_GUEST_CURRENT_VERSION $VERSION_NUMBER
+
+    #endif //__NOVA_GUEST_VERSION_H
+    " >> "$(<)"
+}
+IMPORT $(__name__) : make_version_file_action : : make_version_file_action ;
+import generators : register-standard ;
+register-standard make_version_file_action : VERSION_FILE : HPP ;
+
+# Defines the target "nova_guest_version" which will create the target
+# 'nova_guest_version.hpp' in the output directory.
+hpp nova_guest_version : include/nova/guest/version.th ;
+
+
+###############################################################################
+#      Custom Rule "Unit"
+###############################################################################
+# The rule "unit" defines a target related to a single object file which
+# usually comes from one C++ source file, along with a the source code for its
+# unit tests. Anything that depends on a unit will have to run its unit tests.
+#
+# A more complicated explanation:
+#
+# Because we compile certain unit tests with different properties,
+# Boost's gives an error that we're duplicating a target name.  This is a
+# safety feature used to avoid compiling the code in potentially different ways
+# each builds (though here it doesn't matter):
+# http://www.boost.org/boost-build2/doc/html/bbv2/faq/s02.html
+# To get around it we have to create "obj" targets for each unit, and make
+# any unit tests a dependency to ensure they execute.
+# There does not seem to be a way out of compiling the object file twice-
+# you can make the final target an alias of the original object, but because an
+# alias alone cannot declare a dependency, a second object file is used. There
+# is probably a way around this but it has not been found yet.
+
+local rule unit ( name : sources * : dependencies * : test-sources *
+                  :  test-properties * : env-vars * : main-properties * )
+{
+    if $(test-sources) > []
+    {
+        obj __unit_test_obj_$(name) : $(sources)
+            : $(test-properties) $(main-properties) ;
+        unit-test __unit_tests_$(name)
+            :   __unit_test_obj_$(name)
+                $(test-sources)
+                test_dependencies
+                $(dependencies)
+            :   <define>BOOST_TEST_DYN_LINK
+                <testing.launcher>"BOOST_TEST_CATCH_SYSTEM_ERRORS=no $(env-vars) valgrind --leak-check=full"
+                $(test-properties)
+            ;
+        explicit __unit_tests_$(name) ;
+        obj __unit_obj_$(name) : $(sources)
+            : <dependency>__unit_test_obj_$(name)
+              # Be sure to force the unit tests we require to be shared,
+              # or it will fail on static builds.
+              <dependency>__unit_tests_$(name)/<link>shared
+              $(main-properties)
+            ;
+        alias $(name) :  __unit_obj_$(name) $(dependencies) ;
+    }
+    else
+    {
+        obj __unit_obj_$(name) : $(sources) : $(main-properties) ;
+        alias $(name) :  __unit_obj_$(name) $(dependencies) ;
+    }
+}
+
+
+###############################################################################
+#      Core Library and Unit Tests.
+###############################################################################
+
+# Because we compile certain unit tests with different properties,
+# Boost's gives an error that we're duplicating a target name.  This is a
+# safety feature used to avoid compiling the code in potentially different ways
+# each builds (though here it doesn't matter):
+# http://www.boost.org/boost-build2/doc/html/bbv2/faq/s02.html
+# To get around it we have to create "obj" targets for each unit, and make
+# any unit tests a dependency to ensure they execute.
+# "alias" creates a unique target but ensures we only build the obj file once.
+# We make a unique object file if we compile the test version differently.
+
+
+unit u_nova_guest_GuestException
+    :   src/nova/guest/GuestException.cc
+    ;
+
+unit u_nova_utils_regex
+    :   src/nova/utils/regex.cc
+    :
+    :   tests/nova/utils/regex_tests.cc
+    ;
+
+unit u_nova_flags
+    :   src/nova/flags.cc
+    :   u_nova_guest_GuestException
+        u_nova_utils_regex
+    :   tests/nova/flags_tests.cc
+    ;
+
+unit u_nova_configfile
+    :   src/nova/configfile.cc
+    :   lib_confuse
+        u_nova_guest_GuestException
+    :   tests/configfile_tests.cc
+    ;
+
+unit u_nova_utils_io
+    :   src/nova/utils/io.cc
+    :   lib_rt
+        u_nova_Log_limited  # The full version has a dependency on this module.
+    ;
+
+unit u_nova_json
+    : src/nova/json.cc
+    : lib_json
+    : tests/nova/json_tests.cc
+    ;
+
+obj u_nova_Log_limited
+    : src/nova/Log.cc
+    ;
+
+unit u_nova_Log
+    : u_nova_Log_limited
+      src/nova/Log_rotate_files.cc
+    : u_nova_guest_utils
+      u_nova_utils_io
+    : tests/log_tests.cc
+      u_nova_utils_regex
+    ;
+
+unit u_nova_db_mysql
+    : src/nova/db/mysql.cc
+    : lib_z  # <-- needed by lib_mysqlclient
+      lib_mysqlclient
+      u_nova_Log
+    ;
+
+unit u_nova_guest_utils
+    : src/nova/guest/utils.cc
+    : u_nova_guest_GuestException
+    ;
+
+unit u_nova_db_api
+    :   src/nova/db/api.cc
+    :   u_nova_db_mysql
+        u_nova_guest_utils
+    ;
+
+exe parrot_e
+    :   u_nova_Log
+        tests/nova/parrot.cc
+    ;
+install parrot : parrot_e/<link>shared ;
+unit u_nova_process
+    :   src/nova/process.cc
+    :   u_nova_utils_io
+        u_nova_Log
+    :   tests/nova/process_tests.cc
+    :   <dependency>parrot/<link>shared
+        #<define>_NOVA_PROCESS_VERBOSE
+    :   BOOST_TEST_CATCH_SYSTEM_ERRORS=no
+    ;
+
+unit u_nova_guest_apt_AptException
+    :   src/nova/guest/apt/AptException.cc
+    ;
+
+unit u_nova_guest_apt_apt
+    :   src/nova/guest/apt/apt.cc
+    :   u_nova_Log
+        u_nova_guest_apt_AptException
+        u_nova_utils_io
+        u_nova_process
+        u_nova_utils_regex
+    ;
+
+unit u_nova_guest_apt_AptMessageHandler
+    :   src/nova/guest/apt/AptMessageHandler.cc
+    :   # lib_json # <-- this should be automatic...
+        u_nova_guest_apt_apt
+        u_nova_guest_apt_AptException
+        u_nova_guest_GuestException
+        u_nova_json
+        u_nova_Log
+    :   tests/nova/guest/apt_json_tests.cc
+    ;
+
+unit u_nova_rpc_amqp
+    :   src/nova/rpc/amqp.cc
+    :   lib_rabbitmq
+    ;
+
+unit u_nova_rpc_Sender
+    :   src/nova/rpc/Sender.cc
+    :   u_nova_rpc_amqp
+        u_nova_json
+        u_nova_Log
+    ;
+
+unit u_nova_rpc_Receiver
+    :   src/nova/rpc/Receiver.cc
+    :   u_nova_rpc_amqp
+        u_nova_json
+        u_nova_Log
+    ;
+
+
+unit u_nova_guest_mysql_MySqlGuestException
+    :   src/nova/guest/mysql/MySqlGuestException.cc
+    ;
+
+unit u_nova_guest_mysql_MySqlDatabase
+    :   src/nova/guest/mysql/MySqlDatabase.cc
+    ;
+
+unit u_nova_guest_mysql_MySqlUser
+    :   src/nova/guest/mysql/MySqlUser.cc
+    ;
+
+unit u_nova_guest_mysql_MySqlAdmin
+    :   src/nova/guest/mysql/MySqlAdmin.cc
+    :   lib_uuid
+        u_nova_utils_io
+        u_nova_Log
+        u_nova_db_mysql
+        u_nova_utils_regex
+        u_nova_guest_mysql_MySqlDatabase
+        u_nova_guest_mysql_MySqlGuestException
+        u_nova_guest_mysql_MySqlUser
+    :   tests/nova/guest/mysql/MySqlAdminTests.cc
+    ;
+
+unit u_nova_guest_mysql_MySqlAppStatus
+    :   src/nova/guest/mysql/MySqlAppStatus.cc
+    :   lib_boost_thread
+        u_nova_db_mysql
+        u_nova_utils_io
+        u_nova_process
+        u_nova_guest_utils
+    ;
+
+unit u_nova_guest_mysql_MySqlApp
+    :   src/nova/guest/mysql/MySqlApp.cc
+    :   u_nova_guest_mysql_MySqlAdmin
+        u_nova_guest_apt_apt
+        u_nova_guest_apt_AptException
+        u_nova_configfile
+        u_nova_guest_mysql_MySqlAppStatus
+    ;
+
+unit u_nova_guest_mysql_MySqlMessageHandler
+    :   src/nova/guest/mysql/MySqlMessageHandler.cc
+    :   u_nova_guest_apt_apt
+        u_nova_guest_apt_AptException
+        u_nova_json
+        u_nova_db_mysql
+        u_nova_guest_mysql_MySqlAdmin
+        u_nova_guest_mysql_MySqlAppStatus
+        u_nova_guest_mysql_MySqlApp
+    ;
+
+unit u_nova_guest_diagnostics_Interrogator
+    :   src/nova/guest/diagnostics/Interrogator.cc
+    :   u_nova_Log
+        u_nova_guest_diagnostics_InterrogatorException
+        u_nova_utils_io
+        u_nova_utils_regex
+    :   tests/nova/guest/diag_tests.cc
+    :   <implicit-dependency>nova_guest_version
+    :
+    :   <implicit-dependency>nova_guest_version
+    ;
+
+unit u_nova_guest_diagnostics_InterrogatorException
+    :   src/nova/guest/diagnostics/InterrogatorException.cc
+    :   u_nova_guest_GuestException
+    ;
+
+unit u_nova_guest_diagnostics_InterrogatorMessageHandler
+    :   src/nova/guest/diagnostics/InterrogatorMessageHandler.cc
+    :   # lib_json # <-- this should be automatic...
+        u_nova_guest_diagnostics_Interrogator
+        u_nova_guest_GuestException
+        u_nova_json
+        u_nova_Log
+    :
+    :
+    :
+    :   <implicit-dependency>nova_guest_version
+    ;
+
+alias guest_lib
+    :   u_nova_db_api
+        u_nova_configfile
+        u_nova_flags
+        u_nova_guest_apt_apt
+        u_nova_guest_apt_AptMessageHandler
+        u_nova_guest_apt_AptException
+        u_nova_guest_diagnostics_Interrogator
+        u_nova_guest_diagnostics_InterrogatorException
+        u_nova_guest_diagnostics_InterrogatorMessageHandler
+        u_nova_guest_utils
+        u_nova_json
+        u_nova_Log
+        u_nova_guest_mysql_MySqlMessageHandler
+        u_nova_rpc_Receiver
+        u_nova_utils_regex
+        u_nova_rpc_Sender
+    ;
+
+
+
+###############################################################################
+#      Functional Tests
+###############################################################################
+
+
+# Doesn't require anything other than apt-get on the machine, but is brittle.
+unit-test apt_tests
+    :   u_nova_guest_apt_apt
+        u_nova_flags
+        tests/nova/guest/apt_tests.cc
+        test_dependencies
+    :   <define>_VERBOSE_NOVA_GUEST_APT
+        # Boost fails this test because a process returns a non-zero exit code.
+        # Its a bug thats been fixed in recent versions.
+        #http://stackoverflow.com/questions/5325202/boostunit-test-case-fails-because-a-child-process-exits-with-nonzero
+        <define>BOOST_TEST_DYN_LINK
+        <testing.launcher>"BOOST_TEST_CATCH_SYSTEM_ERRORS=no "
+        #" valgrind --leak-check=full"
+    ;
+explicit apt_tests ;
+
+# Requires RabbitMQ server to be installed and running on localhost.
+unit-test send_and_receive
+    :   u_nova_flags
+        u_nova_guest_GuestException
+        u_nova_rpc_Receiver
+        u_nova_rpc_Sender
+        u_nova_json
+        tests/send_and_receive.cc
+        test_dependencies
+    :   <define>BOOST_TEST_DYN_LINK
+        <testing.launcher>"BOOST_TEST_CATCH_SYSTEM_ERRORS=no valgrind --leak-check=full"
+    ;
+explicit send_and_receive ;
+
+
+# Requires MySQL to be installed with valid values in my.cnf.
+# Run by setting an environment variable named "TEST_ARGS" to whatever nova
+# flag settings you need (such as "--flagfile=blah.conf").
+unit-test int_tests_mysql
+    :   u_nova_Log
+        #u_nova_guest_apt_apt
+        #u_nova_guest_apt_AptException
+        u_nova_flags
+        u_nova_db_mysql
+        tests/nova/guest/mysql/mysql_integration_simple_tests.cc
+        test_dependencies
+    :   <define>BOOST_TEST_DYN_LINK
+        <testing.launcher>"BOOST_TEST_CATCH_SYSTEM_ERRORS=no valgrind --leak-check=full"
+    ;
+explicit int_tests_mysql ;
+
+
+unit-test mysql_nova_updater_tests
+    :   lib_boost_thread
+        u_nova_flags
+        u_nova_guest_mysql_MySqlGuestException
+        u_nova_guest_mysql_MySqlAppStatus
+        test_dependencies
+        tests/nova/guest/mysql/MySqlAppStatus_tests.cc
+    :   <define>BOOST_TEST_DYN_LINK
+        <testing.launcher>"BOOST_TEST_CATCH_SYSTEM_ERRORS=no valgrind --leak-check=full"
+    ;
+explicit api_tests ;
+
+
+unit-test api_tests
+    :   u_nova_flags
+        u_nova_db_api
+        test_dependencies
+        tests/nova/db/api_tests.cc
+    :   <define>BOOST_TEST_DYN_LINK
+        <testing.launcher>"BOOST_TEST_CATCH_SYSTEM_ERRORS=no valgrind --leak-check=full"
+    ;
+explicit api_tests ;
+
+
+# Requires that mysql be utterly destroyed and reinstalled on the machine.
+# TODO(tim.simpson) Reddwarf integration testing always tests this so I may
+# remove it, since its so difficult to run and may just turn into an out-of-date
+# pitfall for someone trying to run this code.
+unit-test int_tests
+    :   u_nova_flags
+        u_nova_Log
+        #u_nova_guest_apt_apt
+        #u_nova_guest_apt_AptException
+        u_nova_guest_mysql_MySqlApp
+        tests/nova/guest/mysql/mysql_integration_tests.cc
+        test_dependencies
+    :   <define>BOOST_TEST_DYN_LINK
+        <testing.launcher>"BOOST_TEST_CATCH_SYSTEM_ERRORS=no valgrind --leak-check=full"
+    ;
+explicit int_tests ;
+
+
+# TODO(tim.simpson): Remove this. The results don't seem that usable anymore.
+run     dependencies
+        guest_lib
+        test_dependencies
+        tests/memory_tests.cc
+    :   # Command line arguments.
+    :   # input files (?)
+    :   <define>BOOST_TEST_DYN_LINK
+    :   memory_tests  # <-- The target name is placed here, for some reason. :(
+    ;
+
+explicit memory_tests ;
+
+
+###############################################################################
+#      Binaries
+###############################################################################
+
+exe nova_guest_diagnostics_interrogator_demo
+    :   u_nova_guest_diagnostics_Interrogator
+        u_nova_flags
+        u_nova_Log
+        tests/nova/guest/diag_demo.cc
+    ;
+
+exe nova_guest_utils_demo
+    :   u_nova_guest_utils
+        u_nova_flags
+        u_nova_Log
+        tests/nova/guest/utils_demo.cc
+    ;
+
+exe nova_process_fd_demo
+    :   u_nova_guest_utils
+        u_nova_flags
+        u_nova_Log
+        u_nova_process
+        lib_boost_thread
+        tests/nova/process_fd_demo.cc
+    :   <linkflags>"-pthread "
+    ;
+
+exe MySqlAppStatus_demo
+    :   u_nova_guest_utils
+        u_nova_flags
+        u_nova_guest_mysql_MySqlAppStatus
+        u_nova_guest_mysql_MySqlGuestException
+        tests/nova/guest/mysql/MySqlAppStatus_demo.cc
+    :   <linkflags>"-pthread "
+    ;
+
+exe apt_install
+    :   u_nova_Log
+        u_nova_guest_apt_apt
+        u_nova_guest_apt_AptException
+        tests/nova/guest/apt_install.cc
+        u_nova_utils_io
+        u_nova_process
+        u_nova_utils_regex
+        lib_rt
+    :   <define>_NOVA_PROCESS_VERBOSE
+    ;
+explicit apt_install ;
+
+
+obj obj_receiver_daemon
+    :   src/receiver_daemon.cc
+    ;
+
+exe receiver
+    :   dependencies
+        guest_lib
+        obj_receiver_daemon
+    :   #<dependency>sql_guest_tests
+       # <dependency>memory_tests
+       <linkflags>"-pthread "
+    ;
+
+exe nova-guest
+	:	static_dependencies
+        #dependencies
+		guest_lib
+        obj_receiver_daemon
+        lib_m
+        lib_c
+        #lib_pthread
+    :  #<dependency>sql_guest_tests
+	   # <dependency>memory_tests
+        #<linkflags>"-static -pthread -static-libgcc -L~/." #" -static-libgcc "
+
+        # Some explanation is in order.
+        # http://www.trilithium.com/johan/2005/06/static-libstdc/
+        # If it cannot find libgcc on the path, it will not statically link it
+        # and quietly give you a bigger executable. :D !!
+
+        # Adding "-static" should statically link in the pthread stuff but
+        # instead it makes an executable that won't load, which is also a neat
+        # feature.
+        # "-pthread" makes the thread stuff get brought in without specifying
+        # libraries.
+
+        <linkflags>" -static-libgcc -L/home/vagrant/. -L/lib/. -L/usr/lib/gcc/x86_64-linux-gnu/4.4.3/. -lpthread " #-static -lpthread -lz " #" -static-libgcc " #static-libstdc++"
+
+	;
+
+exe sender
+	:	dependencies
+		guest_lib
+		src/test_sender.cc
+	:   #<link>shared:<dependency>sql_guest_tests
+	    #<link>shared:<dependency>memory_tests
+	;
+
+# Run this in Valgrind to find possible leaks.
+exe leak_tester
+	:	dependencies
+		guest_lib
+		src/leak_tester.cc
+	:   #<link>shared:<dependency>sql_guest_tests
+	    #<link>shared:<dependency>memory_tests
+	;
+explicit leak_tester ;
+
