@@ -407,6 +407,22 @@ unit u_nova_guest_diagnostics_InterrogatorMessageHandler
     :   <implicit-dependency>nova_guest_version
     ;
 
+
+
+unit u_nova_guest_volumes_VolumeDevice
+    :   src/nova/guest/volumes/VolumeDevice.cc
+    :   u_nova_Log
+        u_nova_process
+    ;
+
+
+unit u_nova_guest_volumes_VolumeMessageHandler
+    :   src/nova/guest/volumes/VolumeMessageHandler.cc
+    :   u_nova_Log
+        u_nova_json
+        u_nova_guest_volumes_VolumeDevice
+    ;
+
 alias guest_lib
     :   u_nova_guest_HeartBeat
         u_nova_configfile
@@ -424,6 +440,7 @@ alias guest_lib
         u_nova_rpc_Receiver
         u_nova_utils_regex
         u_nova_rpc_Sender
+        u_nova_guest_volumes_VolumeMessageHandler
     ;
 
 

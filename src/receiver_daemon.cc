@@ -19,6 +19,7 @@
 #include <sstream>
 #include <boost/thread.hpp>
 #include "nova/guest/utils.h"
+#include "nova/guest/volumes/VolumeMessageHandler.h"
 
 
 /* In release mode, all errors should be caught so the guest will not die.
@@ -50,6 +51,7 @@ using namespace nova::db::mysql;
 using namespace nova::guest::mysql;
 using namespace nova::rpc;
 using std::string;
+using nova::guest::volumes::VolumeMessageHandler;
 
 
 const char PERIODIC_MESSAGE [] =
@@ -178,7 +180,7 @@ int main(int argc, char* argv[]) {
                 flags.nova_sql_database()));
 
         /* Create JSON message handlers. */
-        const int handler_count = 4;
+        const int handler_count = 5;
         MessageHandlerPtr handlers[handler_count];
 
         /* Create Apt Guest */
@@ -204,6 +206,9 @@ int main(int argc, char* argv[]) {
         /* Create the Interrogator for the guest. */
         Interrogator interrogator;
         handlers[3].reset(new InterrogatorMessageHandler(interrogator));
+
+        /* Create volume handler for the guest. */
+        handlers[4].reset(new VolumeMessageHandler(flags.resize_fs_time_out()));
 
         /* Set host value. */
         string actual_host = nova::guest::utils::get_host_name();

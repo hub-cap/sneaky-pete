@@ -151,6 +151,8 @@ class FlagValues {
 
         unsigned long report_interval() const;
 
+        double resize_fs_time_out() const;
+
         bool use_syslog() const;
 
     private:

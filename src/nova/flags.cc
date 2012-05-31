@@ -140,7 +140,7 @@ const char * FlagMap::get(const char * const name) {
 }
 
 const char * FlagMap::get(const char * const name,
-                             const char * const default_value) {
+                          const char * const default_value) {
     const char * value = get(name, false);
     if (value == 0) {
         return default_value;
@@ -231,6 +231,15 @@ optional<bool> get_flag_value<>(FlagMap & map, const char * name) {
 template<typename T>
 T get_flag_value(FlagMap & map, const char * name, T default_value) {
     return get_flag_value<T>(map, name).get_value_or(default_value);
+}
+
+template<typename T>
+T get_flag_value_or_throw(FlagMap & map, const char * name) {
+    optional<T> value = get_flag_value<T>(map, name);
+    if (!value) {
+        throw FlagException(FlagException::KEY_NOT_FOUND, name);
+    }
+    return value.get();
 }
 
 /**---------------------------------------------------------------------------
@@ -367,6 +376,10 @@ const char * FlagValues::rabbit_userid() const {
 
 unsigned long FlagValues::report_interval() const {
     return get_flag_value(*map, "report_interval", (unsigned long) 10);
+}
+
+double FlagValues::resize_fs_time_out() const {
+    return get_flag_value_or_throw<double>(*map, "resize_fs_time_out");
 }
 
 bool FlagValues::use_syslog() const {

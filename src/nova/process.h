@@ -49,8 +49,8 @@ class Process : private boost::noncopyable {
         }
 
         /** Executes the given command, waiting until its finished. Returns
-         *  true if the command runs successfully with a good exit code, false
-         *  otherwise. */
+         *  normally if the command runs successfully with a good exit code,
+         *  otherwise throws ProcessException with EXIT_CODE_NOT_ZERO. */
         static void execute(const CommandList & cmds, double time_out=30);
 
         /** Similar to execute, but throws a TimeOutException if any reads take
