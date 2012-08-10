@@ -18,8 +18,14 @@ namespace nova { namespace guest { namespace diagnostics {
         int threads;
     };
 
+    struct SystemInfo {
+        int mem_total;
+        int num_cpus;
+    };
+
     struct DiagInfo : public ProcStatus {
         std::string version;
+        SystemInfo system_info;
     };
 
     struct FileSystemStats {
@@ -38,6 +44,12 @@ namespace nova { namespace guest { namespace diagnostics {
         public:
             /** Grabs diagnostics for this program. */
             static DiagInfoPtr get_diagnostics();
+
+            /** Grabs the total memory. */
+            static int get_mem_total();
+
+            /** Grabs the number of CPUs. */
+            static int get_num_cpus();
 
             /** Grabs process status for the given process id. */
             static void get_proc_status(pid_t pid, ProcStatus & status);

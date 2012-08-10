@@ -36,6 +36,15 @@ namespace {
         out << JsonData::json_string("vm_hwm") << ": " << diagnostics->vm_hwm;
         out << ",";
         out << JsonData::json_string("threads") << ": " << diagnostics->threads;
+        out << ",";
+        out << JsonData::json_string("system_info") << ": ";
+        out << "{";
+        out << JsonData::json_string("num_cpus") << ": ";
+        out << diagnostics->system_info.num_cpus;
+        out << ", ";
+        out << JsonData::json_string("mem_total") << ": ";
+        out << diagnostics->system_info.mem_total;
+        out << "}";
         out << "}";
         return out.str();
     }
