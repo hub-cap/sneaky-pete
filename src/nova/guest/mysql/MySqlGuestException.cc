@@ -22,10 +22,8 @@ MySqlGuestException::~MySqlGuestException() throw() {
 
 const char *  MySqlGuestException::code_to_string(Code code) {
     switch(code) {
-        case CANT_READ_ORIGINAL_MYCNF:
-            return "Can't read from original my.cnf file.";
-        case CANT_WRITE_TMP_MYCNF:
-            return "Couldn't write temp my.cnf file.";
+        case CANT_WRITE_PASSWORD_MYCNF:
+            return "Couldn't write reddwarfguest.cnf file.";
         case COULD_NOT_START_MYSQL:
             return "Could not start MySQL!";
         case COULD_NOT_STOP_MYSQL:

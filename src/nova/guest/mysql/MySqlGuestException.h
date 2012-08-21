@@ -11,8 +11,7 @@ namespace nova { namespace guest { namespace mysql {
 
         public:
             enum Code {
-                CANT_READ_ORIGINAL_MYCNF,
-                CANT_WRITE_TMP_MYCNF,
+                CANT_WRITE_PASSWORD_MYCNF,
                 COULD_NOT_START_MYSQL,
                 COULD_NOT_STOP_MYSQL,
                 GENERAL,
