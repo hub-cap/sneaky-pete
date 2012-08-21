@@ -527,7 +527,7 @@ void MySqlConnection::get_auth_from_config(string & user, string & password) {
 
     // TODO(tim.simpson): This should be the normal my.cnf, but we can't
     // read it from there... yet.
-    ifstream my_cnf("/var/lib/nova/my.cnf");
+    ifstream my_cnf("/var/lib/nova/conf.d/reddwarfguest.cnf");
     if (!my_cnf.is_open()) {
         throw MySqlException(MySqlException::MY_CNF_FILE_NOT_FOUND);
     }

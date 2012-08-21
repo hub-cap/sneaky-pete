@@ -36,10 +36,8 @@ namespace {
 
     const char * ADMIN_USER_NAME = "os_admin";
     const char * ORIG_MYCNF = "/etc/mysql/my.cnf";
-    const char * FINAL_MYCNF ="/var/lib/mysql/my.cnf";
     // There's a permisions issue which necessitates this.
-    const char * HACKY_MYCNF ="/var/lib/nova/my.cnf";
-    const char * TMP_MYCNF = "/tmp/my.cnf.tmp";
+    const char * PASSWORD_MYCNF ="/var/lib/nova/conf.d/reddwarfguest.cnf";
     const char * DBAAS_MYCNF = "/etc/dbaas/my.cnf/my.cnf.%dM";
 
     /** If there is a file at template_path, back up the current file to a new
@@ -58,44 +56,22 @@ namespace {
         }
     }
 
-    /** Write a new file thats just like the original but with a different
-     *  password. */
-    void write_temp_mycnf_with_admin_account(const char * original_file_path,
-                                             const char * alt_file_path,
-                                             const char * temp_file_path,
-                                             const char * password) {
-        ifstream mycnf_file;
-        mycnf_file.open(original_file_path);
-        if (mycnf_file.fail()) {
-            NOVA_LOG_ERROR2("Error reading from my.cnf file %s, switching "
-                            "to %s.", original_file_path, alt_file_path);
-            mycnf_file.close();
-            mycnf_file.open(alt_file_path);
+    /** Write the new admin password to reddwarfguest.cnf file. */
+    void write_password_to_file( const char * password) {
+        ofstream cnf_file;
+        cnf_file.open(PASSWORD_MYCNF);
+        if (!cnf_file.good()) {
+            NOVA_LOG_ERROR2("Couldn't open reddwarfguest.cnf file: %s.", PASSWORD_MYCNF);
+            throw MySqlGuestException(MySqlGuestException::CANT_WRITE_PASSWORD_MYCNF);
         }
-        ofstream tmp_file;
-        tmp_file.open(temp_file_path);
-        if (!tmp_file.good()) {
-            NOVA_LOG_ERROR2("Couldn't open temp file: %s.", temp_file_path);
-            throw MySqlGuestException(MySqlGuestException::CANT_WRITE_TMP_MYCNF);
-        }
-        string line;
-        while(!mycnf_file.eof()) {
-            if (mycnf_file.fail()) {
-                NOVA_LOG_ERROR2("Error reading from my.cnf file: %s.",
-                                original_file_path);
-                throw MySqlGuestException(
-                    MySqlGuestException::CANT_READ_ORIGINAL_MYCNF);
-            }
-            std::getline(mycnf_file, line);
-            tmp_file << line << std::endl;
-            if (line.find("[client]", 0) != string::npos) {
-                tmp_file << "user\t\t= " << ADMIN_USER_NAME << std::endl;
-                tmp_file << "password\t= " << password << std::endl;
-            }
-        }
-        mycnf_file.close();
-        tmp_file.close();
+
+        cnf_file << "[client]" << std::endl;
+        cnf_file << "user\t\t= " << ADMIN_USER_NAME << std::endl;
+        cnf_file << "password\t= " << password << std::endl;
+        cnf_file.close();
     }
+
+
 }  // end anonymous namespace
 
 MySqlApp::MySqlApp(MySqlAppStatusPtr status, int state_change_wait_time)
@@ -144,19 +120,9 @@ void MySqlApp::write_mycnf(AptGuest & apt, int updated_memory_mb,
     string template_path = str(format(DBAAS_MYCNF) % updated_memory_mb);
     replace_mycnf_with_template(template_path.c_str(), ORIG_MYCNF);
 
-    NOVA_LOG_INFO("Writing new temp my.cnf.");
-    write_temp_mycnf_with_admin_account(ORIG_MYCNF, HACKY_MYCNF, TMP_MYCNF,
-                                        admin_password.c_str());
+    NOVA_LOG_INFO("Writing user and password to reddwarfguest.cnf.");
+    write_password_to_file(admin_password.c_str());
 
-    NOVA_LOG_INFO("Copying tmp file so we can log in (permissions work-around).");
-    Process::execute(list_of("/usr/bin/sudo")("cp")(TMP_MYCNF)(HACKY_MYCNF));
-    NOVA_LOG_INFO("Moving tmp into final.");
-    Process::execute(list_of("/usr/bin/sudo")("mv")(TMP_MYCNF)(FINAL_MYCNF));
-    NOVA_LOG_INFO("Removing original my.cnf.");
-    Process::execute(list_of("/usr/bin/sudo")("rm")(ORIG_MYCNF));
-    NOVA_LOG_INFO("Symlinking final my.cnf.");
-    Process::execute(list_of("/usr/bin/sudo")("ln")("-s")(FINAL_MYCNF)
-                            (ORIG_MYCNF));
     wipe_ib_logfiles();
 }
 
